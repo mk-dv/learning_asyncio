@@ -9,24 +9,21 @@ from facade import Context, set_timer
 def get():
     sock = async_socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    def on_conn(error):
-        if error:
-            return print(error)
+    job1 = sock.connect(('info.cern.ch', 80))
+    # теперь нужно как-то привязать коллбек срабатывающий при коннекте и
+    # вернуть управление el до завершения подключения
 
-        def on_sent(error):
-            if error:
-                sock.close()
-                return print(error)
+    # теперь мы можем выбрасывать эксепшены прямо наверх
+    try:
+        job2 = sock.sendall(b'GET / HTTP/1.1\r\nHost: info.cern.ch\r\n\r\n')
+        # привязать колбек при отправке и вернуть управление
 
-            def on_resp(error, resp=None):
-                sock.close()
-                if error:
-                    return print(error)
-                print(resp)
+        job3 = sock.recv(1024)
+        # аналогично
+        print(job3.value)
+    finally:
+        sock.close()
 
-            sock.recv(1024, on_resp)
-        sock.sendall(b'GET / HTTP/1.1\r\nHost: info.cern.ch\r\n\r\n', on_sent)
-    sock.connect(('info.cern.ch', 80), on_conn)
 
 def main():
     # 1: 1.62
