@@ -1,0 +1,57 @@
+передаем entry point в el.run -> el.execute
+    # все генераторы - пропускаем через unwind, который последовательно пинает его пока он не вернет промис, результат или эксепшен
+    # если в процессе возвращается промис - то в _on_resolve кладется lambda x=None: unwind(generator, on_success, on_exceptions, x)) c по сути генератором который вернул этот промис и promise._on_resolve регается в el,
+    # т.е. по идее el снова дернет в будущем этот промис и по идее вернет результат туда же... но это пока не точно
+        # как и lambda e: unwind(generator, on_success, on_exceptions, e, 'throw' в _reject
+            # что по идее позволит в дальнейшем дергать Exceptions из промиса в el
+    ep это генератор -> unwind(main(*args), ok=lambda *_: None, fail=lambda e: print('Uncaught rejection: {e}'))
+        пробуем пнуть main(*args)
+            sleep(duration=5000) -> Promise
+                Context.event_loop.set_timer(duration * 10e3)
+                    Context.event_loop._queue._register_timer(now + duration, p._resolve)
+            p._on_resolve.append(main.on_sleep)
+            создаем 10 генераторов main.print_balance и возвращаем их в вызывающий код  # ?может тут нужен был yield from
+        wait_all(
+            col=пачка_генераторов,
+            ok=lambda x=None: unwind(
+                    gen=main(*args), ok=lambda *_: None, fail=lambda e: print('Uncaught rejection: {e}'), x
+                ),
+            fail=lambda e: unwind(
+                    gen=main(*args), ok=lambda *_: None, fail=lambda e: print('Uncaught rejection: {e}'), e, 'throw'
+                ),
+        )
+            для каждого генератора
+                unwind(gen=gen,
+                        # пишет каждый результат в wait_all.results[i], в конце вызывает unwind(generator=main(*args), on_success=lambda *_: None, on_exceptions=lambda e: print('Uncaught rejection: {e}'), results)
+                       ok=_resolve_single(i),
+                       fail=fail)
+                       пинаем генератор -> print_balance возвращает генератор get_user_balance
+                            unwind(gen=get_user_balance, ok=lambda x: unwind(gen, ok, fail, x), fail=lambda e: unwind(gen, ok, fail, e, 'throw'),
+                                пинаем get_user_balance -> utils.sleep(0..1000) -> el._queue.register_timer(.., lambda _: p._resolve()) # по сути этот таймер сработает первым т.к. sleep передано 5000
+                                он возвращает Promise
+                                добавляем ему append lambda x=None: unwind(gen, ok, fail, x) в _on_resolve
+                                добавляем ему lambda e: unwind(gen, ok, fail, e, 'throw') to self._on_reject
+        self._time <- current time
+        дальше типично дергаем очередь - асинхронные сокеты еще не создавали эвенты, _ready пусты
+        достаем зареганный get_user_balance, снова пробуем пнуть -> синхронно срабатывает цепь yeild
+            создаем клиента
+            client.get_user -> client._get -> создаем и регаем сокет в селекторе
+            async_socket.connect
+                регаем _on_conn с вызовами Promise._reject/_resolve в sock._callbacks['conn']
+                >> Promise
+        добавляем возвращенному в unwind Promise
+        lambda x=None: unwind(gen, ok, fail, x) в _on_resolve
+        и lambda e: unwind(gen, ok, fail, e, 'throw') в self._on_reject
+
+        повторяем n раз
+
+        в какой-то момент в queue селектор достает от os событие о готовом сокете
+        выполняет колбек
+        Promise._resolve(args=REQUESTED_BYTES)
+        и выполняет все зареганные в этом промисе коллбеки
+            возвращаем результат обратно в корутину чтобы она могла продолжиться
+            unwind(gen=<generator object Client._get at 0x7f3281f813c0>, ok=lambda x: unwind(gen, ok, fail, x), fail=lambda e: unwind(gen, ok, fail, e, 'throw'), ret=b'{"id": "3", "name": "209d8653", "account_id": "2"}', method=send)
+        по сути мы храним наше состояние не в локальной области видимости при создании замыканий, а тоже самое в коллбеках, которые хранят возвращаемые по сети значения, и генератор который это значение ожидал, что позволяет продолжать с того же места
+        когда вываливается StopIteration - это финальное значение которое можно пробрасывать наверх что мы и делаем цепью возвращаясь из стека, т.к. то что генератор в самом низу стека завершился - еще не значит что завершились генераторы выше по стеку
+                unwind(gen=<generator object get_user_balance at 0x7f3281f81040>, ok=lambda x: unwind(gen, ok, fail, x), fail=lambda e: unwind(gen, ok, fail, e, 'throw'), ret={'id': '3', 'name': '209d8653', 'account_id': '2'}, method=send)
+        возвращаемся в get_user_balance, мы уже асинхронно получили данные, повторяем с другими задачами...

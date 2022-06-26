@@ -1,57 +1,66 @@
-from log import get_logger
-from queue import Queue
-from utils import hrtime
+from promise import Promise
+from taskqueue import TaskQueue
+from utils import hrtime, is_generator, unwind
 
-logger = get_logger(format='{message}')
+from log import get_console, get_callable_representation
+
+console = get_console(format='<light-blue>EventLoop</light-blue>{message}')
 
 
 class EventLoop:
     def __init__(self):
-        logger.info('EventLoop.__init__()')
-
-        self._queue = Queue()
+        self._queue = TaskQueue()
         self._time = None
 
     def run(self, entry_point, *args):
-        logger.info(f'EventLoop.run(entry_point={entry_point}, args={args}')
+        console(f'.run(entry_point={entry_point}, args={args}')
 
         self._execute(entry_point, *args)
 
         while not self._queue.is_empty():
-            fn, *mask = self._queue.pop(self._time)  # берем последний добавленный колбек
-            self._execute(fn, *mask)
+            fn, mask = self._queue.pop(self._time)  # *mask
+            self._execute(fn, mask)  # *mask
 
         self._queue.close()
 
     def register_fileobj(self, fileobj, callback):
-        logger.info(f'EventLoop.register_fileobj(fileobj={fileobj}, callback={callback})')
+        callback_str = get_callable_representation(callback)
+        console(f'.register_fileobj(fileobj={fileobj}, callback={callback_str})')
 
         self._queue.register_fileobj(fileobj, callback)
 
     def unregister_fileobj(self, fileobj):
-        logger.info(f'EventLoop.unregister_fileobj(fileobj={fileobj}')
+        console(f'.unregister_fileobj(fileobj={fileobj}')
 
         self._queue.unregister_fileobj(fileobj)
 
-    def set_timer(self, duration, callback):
-        logger.info(f'EventLoop.set_timer(duration={duration}, callback={callback}')
+    def set_timer(self, duration):
+        console(f'.set_timer(duration={duration})')
 
+        p = Promise()
         self._time = hrtime()
-        logger.info(f'EventLoop.set_timer: EventLoop._time <- {self._time}')
+
         self._queue.register_timer(self._time + duration,
-                                   callback)  # разобраться почему lambda нужна
+                                   p._resolve)
+        return p
 
     def _execute(self, callback, *args):
-        logger.info(f'EventLoop._execute(callback={callback}, args={args}')
+        callback_str = get_callable_representation(callback)
+        console(f'._execute(callback={callback_str}, args={args}')
 
-        self._time = hrtime()  # не думаю что это нужно
-        logger.info(f'EventLoop._execute start: EventLoop._time <- {self._time}')
+        # self._time = hrtime()  # по идее не нужно
+
         try:
-            logger.info(f'EventLoop._execute: trying execute {callback}(*{args})')
-            # "корень" стека
-            callback(*args)
+            returned = callback(*args)
+
+            if is_generator(returned):
+                unwind(
+                    generator=returned,
+                    on_success=None,
+                    on_exceptions=lambda e: print('Uncaught rejection:', e),
+                )
         except Exception as exc:
             print('Uncaught exception:', exc)
 
         self._time = hrtime()
-        logger.info(f'EventLoop._execute end: EventLoop._time <- {self._time}')
+        console(f'._execute end')

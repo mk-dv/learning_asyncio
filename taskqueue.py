@@ -3,16 +3,14 @@ import heapq
 import selectors
 import time
 
-from log import get_logger
+from log import get_callable_representation, get_console
 
-logger = get_logger(format='{message}')
+console = get_console(format='TaskQueue{message}')
 
 
-class Queue:
+class TaskQueue:
     """Фасад для двух суб-очередей"""
     def __init__(self):
-        logger.info('Queue.__init__()')
-
         # мультиплексирование i/o
         self._selector = selectors.DefaultSelector()
         self._timers = []
@@ -20,15 +18,14 @@ class Queue:
         self._ready = collections.deque()
 
     def register_timer(self, tick, callback):
-        logger.info(f'Queue.register_timer(tick={tick}, callback={callback})')
+        callback_str = get_callable_representation(callback)
+        console(f'.register_timer(tick={tick}, callback={callback_str})')
 
         timer = (tick, self._timer_no, callback)
         heapq.heappush(self._timers, timer)
         self._timer_no += 1
 
     def register_fileobj(self, fileobj, callback):
-        logger.info(f'Queue.register_fileobj(fileobj={fileobj}, callback={callback})')
-
         events = selectors.EVENT_READ | selectors.EVENT_WRITE
         # Зарегистрировать файловый объект для выбора, отслеживая его на предмет событий ввода-вывода.
         # fileobj — это файловый объект, который нужно отслеживать. Это может быть целочисленный файловый дескриптор или объект с методом fileno(). events — это побитовая маска отслеживаемых событий. data — непрозрачный объект.
@@ -36,8 +33,6 @@ class Queue:
         self._selector.register(fileobj, events, callback)
 
     def unregister_fileobj(self, fileobj):
-        logger.info(f'Queue.unregister_fileobj(fileobj={fileobj})')
-
         # Это возвращает связанный экземпляр SelectorKey или вызывает KeyError, если fileobj не зарегистрирован.
         self._selector.unregister(fileobj)
 
@@ -57,83 +52,81 @@ class Queue:
 
         Выполнение текущего обратного вызова регистрирует новые обратные вызовы в очереди. И цикл повторяется.
         """
-        logger.info(f'Queue.pop(tick={tick})')
+        console(f'.pop(tick={tick})')
 
         if self._ready:
             queue_element = self._ready.popleft()
-            logger.info(f'Queue.pop:Queue._ready not empty -> return {queue_element}')
+            console(f'.pop: TaskQueue._ready not empty -> return {queue_element}')
             return queue_element
 
         timeout = self.get_timeout(tick)
-        logger.info(f'timeout={timeout}')
+        console(f' timeout={timeout}')
 
         # при операциях на зареганых сокетах - возникает event соответствующей
         # маской и данными
         events = self.select(timeout)
-        logger.info(f'events={events}')
+        console(f'.pop: events={events}')
 
         if events:
-            logger.info('Queue.pop appending events to _ready')
+            console('.pop appending events to _ready')
         else:
-            logger.info('Queue.pop No events')
+            console('.pop No events')
 
         for key, mask in events:
             callback = key.data
             self._ready.append((callback, mask))
 
         if events:
-            logger.info(f'Queue._ready={self._ready}')
+            console(f'._ready={self._ready}')
 
         # нет готовых, но есть таймеры -> спим до ближайшего и возвращаем его
         if not self._ready and self._timers:
             idle = (self._timers[0][0] - tick)
 
-            logger.info(f'Queue._ready is empty, _timers={self._timers}')
+            cleaned_timers = [(tick, timer_no, get_callable_representation(callback))
+                              for tick, timer_no, callback
+                              in self._timers]
+            console(f'._ready is empty, _timers={cleaned_timers}')
 
             # если до следующего события срабатывающего по таймеру времени меньше чем тика оно считается следующим, иначе засыпаем
             if idle > 0:
-                logger.info(f'Queue.pop sleeping for {idle / 10e6}')
+                console(f'.pop sleeping for {idle / 10e6}')
+
                 time.sleep(idle / 10e6)
 
-                logger.info(f'recursive call Queue.pop')
+                console(f'.pop recursive call TaskQueue.pop')
                 queue_element = self.pop(tick + idle)
 
-                logger.info(f'Queue.pop returning {queue_element}')
+                console(f'.pop returning {queue_element}')
                 return queue_element
 
         # if ближайший таймер в пределах тика
         while self._timers and self._timers[0][0] <= tick:
-            logger.info(f'Queue._timers={self._timers}\n\t\t, Qeueu._timers[0][0] <= {tick}')
-
             *_, callback = heapq.heappop(self._timers)
+            self._ready.append((callback, None))
 
-            logger.info(f'Queue.pop append {callback} to _ready')
-            self._ready.append((callback,))
-
-        logger.info(f'Queue.pop reach the bottom, Queue._ready={self._ready}')
-        result = self._ready.popleft()
-
-        logger.info(f'Queue._ready.popleft()={result}')
-        return result
+        queue_element = self._ready.popleft()
+        console(f'.pop returning {queue_element}')
+        return queue_element
 
     def select(self, timeout):
-        logger.info(f'Queue.select(timeout={timeout})')
+        console(f'.select(timeout={timeout})')
 
         try:
             """Берем первый готовый сокет"""
 
-            logger.info('Queue.select trying get event by timeout')
+            # console('TaskQueue.select trying get event by timeout')
             events = self._selector.select(timeout)
         except OSError:
-            logger.info(f'Qeue.select error - sleeping for {timeout}')
-
-            time.sleep(timeout)
+            # console(f'Qeue.select error - sleeping for {timeout}')
+            if timeout > 0:
+                time.sleep(timeout)
             events = tuple()
 
         return events
 
     def get_timeout(self, tick):
-        logger.info(f'Queue.get_timeout(tick={tick})')
+        console(f'TaskQueue.get_timeout(tick={tick})')
         return (self._timers[0][0] - tick) / 10e6 if self._timers else None
 
     def is_empty(self):

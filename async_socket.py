@@ -1,13 +1,14 @@
+import errno
 # селекторы - высокоуровневая облочка для мультиплексирования
 import selectors
 import socket
 
-import errno
 
 from facade import Context
-from log import get_logger
+from promise import Promise
+from log import get_console
 
-logger = get_logger(format='{message}')
+console = get_console(format='<light-green>async_socket</light-green>{message}')
 
 
 class async_socket(Context):
@@ -19,31 +20,39 @@ class async_socket(Context):
     -> el будет вызывать соответствующий callback
     """
     def __init__(self, *args):
-        logger.info(f'async_socket.__init__(args={args})')
-
         self._sock = socket.socket(*args)
         self._sock.setblocking(False)
         self.event_loop.register_fileobj(self._sock, self._on_event)
-
         self._state = self.states.INITIAL
         self._callbacks = {}
 
-    def connect(self, addr, callback):
-        logger.info(f'async_socket.connect(addr={addr}, callback={callback}')
+    # аналогичено коллбекам, но не требует передачи колбека и возвращает промис
+    def connect(self, addr):
+        console(f'.connect(addr={addr})')
 
         if self._state != self.states.INITIAL:
             raise Exception(f'state {self.states.INITIAL} expected, but is {self._state}')
 
         self._state = self.states.CONNECTING
-        self._callbacks['conn'] = callback
+
+        p = Promise()
+
+        def _on_conn(error):
+            if error:
+                p._reject(error)
+            else:
+                p._resolve()
+
+        self._callbacks['conn'] = _on_conn
 
         # ~ connect, но -> код ошибки вместо возбуждения исключения
         error_code = self._sock.connect_ex(addr)
-        if errno.errorcode[error_code] != 'EINPROGRESS':
-            # неожиданное поведение - коннект возвращает не establishing connection in progress
-            raise Exception('error code is not EINPROGRESS')
 
-    def recv(self, n, callback):
+        if error_code != errno.EINPROGRESS:
+            raise Exception('error code is not EINPROGRESS')
+        return p
+
+    def recv(self, n):
         """
 
         Args:
@@ -52,44 +61,50 @@ class async_socket(Context):
 
         Returns: None
         """
-        logger.info(f'async_socket.recv(n={n}, callback={callback}')
+        console(f'.recv(n={n})')
 
         if self._state != self.states.CONNECTED:
-            Exception(f'socket.recv(): self._state expected 2 but actual is {self._state}')
+            raise Exception(f'async_socket.recv(): self._state expected 2 but actual is {self._state}')
 
         if 'recv' in self._callbacks:
-            Exception('socket.recv(): recv in self._callbacks')
+            raise Exception('async_socket.recv(): recv in self._callbacks')
 
+        p = Promise()
         def _on_read_ready(error):
             if error:
-                return callback(error)
-            data = self._sock.recv(n)
-            callback(None, data)
+                p._reject(error)
+            else:
+                data = self._sock.recv(n)
+                p._resolve(data)
 
         self._callbacks['recv'] = _on_read_ready
+        return p
 
-    def sendall(self, data, callback):
-        logger.info(f'async_socket.sendall(data={data}, callback={callback}')
+    def sendall(self, data):
+        console(f'.sendall(data={data})')
 
         if self._state != self.states.CONNECTED:
-            raise Exception(f'socket.sendall(), self._state expected 2 but actual is {self._state}')
+            raise Exception(f'async_socket.sendall(), self._state expected 2 but actual is {self._state}')
 
         if 'sent' in self._callbacks:
-            raise Exception('socket.sendall(), sent in self._callbacks')
+            raise Exception('async_socket.sendall(), sent in self._callbacks')
+
+        p = Promise()
 
         def _on_write_ready(error):
             nonlocal data
             if error:
-                return callback(error)
+                return p._reject(error)
 
             n = self._sock.send(data)
             if n < len(data):
                 data = data[n:]
                 self._callbacks['sent'] = _on_write_ready
             else:
-                callback(None)
+                p._resolve(None)
 
         self._callbacks['sent'] = _on_write_ready
+        return p
 
     def close(self):
         self.event_loop.unregister_fileobj(self._sock)
@@ -98,11 +113,9 @@ class async_socket(Context):
         self._sock.close()
 
     def _on_event(self, mask):
-        """run a callback from self._callbaks if exists"""
-        logger.info(f'async_socket._on_event(mask={mask})')
-
         if self._state == self.states.CONNECTING:
-            logger.info('async_socket._on_event: CONNECTING')
+            console('._on_event: CONNECTING')
+
             if mask != selectors.EVENT_WRITE:
                 raise Exception(
                     f'_on_event(): mask {selectors.EVENT_WRITE} expeted, but {mask} is actual'
@@ -111,8 +124,6 @@ class async_socket(Context):
             callback = self._callbacks.pop('conn')
 
             error = self._get_sock_error()
-            logger.info(f'async_socket._on_event -> _get_sock_error() = {error}')
-
             if error:
                 self.close()
             else:
@@ -147,7 +158,7 @@ class async_socket(Context):
         Returns: ConnectionError | None
 
         """
-        logger.info('async_socket._get_sock_error()')
+        console('._get_sock_error()')
 
         errorno = self._sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
         if errorno:
